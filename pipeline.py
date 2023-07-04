@@ -8,10 +8,11 @@ import os
 import csv
 import pandas as pd
 import sqlite3 as sql
+import subprocess
 import tqdm
 
 class AISdatetGenerator(object):
-    def __init__(self,timestart:str='2023-06-05', timeend:str=None, dataDirectory:str='.', databaseDirectory:str='.', databaseName:str='aisPlay.db') -> None:
+    def __init__(self,timestart:str='2023-06-05', timeend:str=None, dataDirectory:str='./', databaseDirectory:str='./', databaseName:str='aisPlay.db') -> None:
         self.url = "http://web.ais.dk/aisdata/" 
         self.timestart = timestart
         self.timeend = timeend
@@ -23,6 +24,7 @@ class AISdatetGenerator(object):
         self.data = self.crawl(self.url)
         self.csv_filenames = []
         
+        self.connectSQLite()
 
 
     def crawl(self, url):
@@ -38,7 +40,7 @@ class AISdatetGenerator(object):
         
 
            
-        ### CHOSE ZIP FILES using regex ###
+        ### CHOSE ZIP FILES###
         # check if zips are already in directory
         AIS_dates_in_directory = [file[6:-4] for file in os.listdir(self.dataDirectory) if file.endswith(".csv")]
 
@@ -47,17 +49,19 @@ class AISdatetGenerator(object):
         self.zip_names = [x['href'][6:-4] for x in self.zip_names] 
         
         if self.timeend is None: #single file
-            self.desired_date = list(filter(lambda x: x == self.timestart, self.zip_names))
-            if self.desired_date[0] in AIS_dates_in_directory: # check if already downloaded 
-                print("The AIS data for the desired timeframe is already downloaded. Data is ready for filtering.")
-                return
-            
+            self.desired_date = list(filter(lambda x: x == self.timestart, self.zip_names))[0]
+
+            # TODO Test if wrong directory -> IndexError  when [0] to access empty self.desired_dates
+            # check if already downloaded 
+            if self.desired_date not in AIS_dates_in_directory:
+                print("Proceeding with preparing the download for the single day requested.")
+                selected_zips = ['aisdk-' + self.desired_date + '.zip']    
 
             else:
-                print("Proceeding with preparing the download for the single day requested.")
-                selected_zips = ['aisdk-' + self.desired_date[0] + '.zip']
-
-        else: # multiple files
+                print("Selected AIS data already downloaded. Ready for filtering.")
+                return
+            
+            
             desired_dates = list(filter(lambda x: x >= self.timestart and x <= self.timeend, self.zip_names))
             for date in desired_dates: 
                 if date in AIS_dates_in_directory:
@@ -98,6 +102,7 @@ class AISdatetGenerator(object):
             #     print("ERROR, something went wrong")
             
             ## Save as zip file            
+
             with open(zip_name,'wb') as output_file:
                 output_file.write(response.content)
             
@@ -109,13 +114,16 @@ class AISdatetGenerator(object):
         print('Desired data is ready for filtering.')
     
     def connectSQLite(self):
-        self.connection = sql.connect('../ais.db')
-        print(self.connection.total_changes) # test if connection is successful
-        self.cursor = self.connection.cursor()
+        self.conn = sql.connect(self.databaseDirectory + 'ais.db')
+        print(self.conn.total_changes) # test if connection is successful
+        self.cursor = self.conn.cursor()
 
-       
+        # Output basic information about the database
+        self.cursor.execute('SELECT name FROM sqlite_schema WHERE type="table" AND name NOT LIKE "sqlite_%";')
+        all_tables = self.cursor.fetchall()
+        print(f'The following tables are in Database {all_tables}')
 
-
+        
 
     def updateMMSIs(self):
         '''
@@ -132,19 +140,33 @@ class AISdatetGenerator(object):
         self.cursor.execute('CREATE TABLE tempfishingMMSI(MMSI UNIQUE, NavStatus TEXT);')
         self.cursor.execute('CREATE TABLE temppassengerMMSI(MMSI UNIQUE, ShipType TEXT);')
         self.cursor.execute('CREATE TABLE tempmerchantMMSI(MMSI UNIQUE, CargoType TEXT);')
+        
+        print('temp MMSI files created successfully.')
 
+        subprocess.call(['sqlite3', "ais.db", "SELECT COUNT(*) FROM tempAIS;",]) #".mode csv", f".import ../data_DMA/aisdk-{self.desired_date[0]}.csv tempAIS", "SELECT COUNT(*) FROM tempAIS;"})
+        #os.system("sqlite3 ../ais.db;import subprocess .mode csv; .quit;")
+        
+        print('got into sqlite3')
+        return
+    
+    
         ## Import existing and newly downloaded dataset and alter to aisPlay format
-        #users = pd.read_csv('users.csv')
-        #users.to_sql('users', conn, if_exists='append', index = False, chunksize = 10000)
-
+        #users = pd.read_csv(self.dataDirectory +'/aisdk-' + self.desired_date[0]+'.csv')
+        #users.to_sql('tempAIS', self.cursor, if_exists='append', index = False, chunksize = 10000)
+        #print(f'{self.desired_date} importe into database')
 
         ## Alter tables into desired table structure
 
+        
+        
         ## filter MMSIs for the three defined classes 
-        self.cursor.execute(f'INSERT INTO tempfishingMMSI SELECT DISTINCT(MMSI), NavStatus FROM tempAIS WHERE NavStatus LIKE "%fishing%" OR "ShipType" LIKE "%ishing%";')
-        self.cursor.execute(f'INSERT INTO temppassengerMMSI SELECT DISTINCT(MMSI), "ShipType" FROM tempAIS WHERE "ShipType" LIKE "%passenger%";')
-        self.cursor.execute(f'INSERT INTO tempmerchantMMSI SELECT DISTINCT(MMSI), NULL FROM tempAIS WHERE CargoType NOT NULL;')
+        self.cursor.execute(f'INSERT INTO tempfishingMMSI SELECT DISTINCT(tempfishingMMSI.MMSI), NavStatus FROM tempAIS WHERE NavStatus LIKE "%fishing%" OR "ShipType" LIKE "%ishing%";')
+        self.cursor.execute(f'INSERT INTO temppassengerMMSI SELECT DISTINCT(temppassengerMMSI.MMSI), "ShipType" FROM tempAIS WHERE "ShipType" LIKE "%passenger%";')
+        self.cursor.execute(f'INSERT INTO tempmerchantMMSI SELECT DISTINCT(tempmerchantMMSI.MMSI), NULL FROM tempAIS WHERE CargoType NOT NULL;')
 
+        
+        
+        
         ## Merge tempMMSIs into the OG MMSI file
         # TODO: CHECK IF MMSI FILES exist: else: print('make sure you are connected to the correct database')
         self.cursor.execute(f'INSERT INTO fishingMMSI SELECT tempfishingMMSI.MMSI, tempfishingMMSI.NavStatus FROM tempfishingMMSI WHERE tempfishingMMSI.MMSI NOT IN (SELECT fishingMMSI.MMSI from fishingMMSI);')
@@ -157,7 +179,7 @@ class AISdatetGenerator(object):
         self.cursor.execute('DROP TABLE IF EXISTS temppassengerMMSI;')
         self.cursor.execute('DROP TABLE IF EXISTS tempmerchantMMSI;')
 
-        pass
+        
 
 
     def extractCSV(self, vesselType:str='fishing'):
