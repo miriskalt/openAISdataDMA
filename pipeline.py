@@ -12,12 +12,26 @@ import subprocess
 import tqdm
 
 class AISdatetGenerator(object):
-    def __init__(self,timestart:str='2023-06-05', timeend:str=None, dataDirectory:str='./', databaseDirectory:str='./', databaseName:str='aisPlay.db') -> None:
+    def __init__(self,timestart:str='2023-06-05',
+                 timeend:str=None, 
+                 dataDirectory:str='./', 
+                 databaseDirectory:str='./', 
+                 databaseName:str='aisPlay.db',
+                 unrealistic_location=False,
+                 unrealistic_speeds=False,
+                 unrealistic_mmsi=False,
+                 fill_statics=False,
+                 comp_distance=False,
+                 comp_timedelta=False,
+                 comp_speed=False,
+                 drop_list:list=None) -> None:
+        
         self.url = "http://web.ais.dk/aisdata/" 
         self.timestart = timestart
         self.timeend = timeend
         self.dataDirectory = dataDirectory
         self.databaseDirectory = databaseDirectory
+        
         
         # move syntaxcheck of input timestart and timeend up here
 
@@ -25,6 +39,17 @@ class AISdatetGenerator(object):
         self.csv_filenames = []
         
         self.connectSQLite()
+        self.updateMMSIs()
+
+        if unrealistic_location: self.drop_unrealistic_loc()
+        if unrealistic_speeds: self.drop_unrealistic_speeds()
+        if unrealistic_mmsi: self.drop_unrealistic_mmsi()
+        if fill_statics: self.fill_statics()
+        if comp_distance: self.comp_distance()
+        if comp_timedelta: self.comp_timedelta()
+        if comp_speed: self.comp_speed()
+        if drop_list: self.drop_list(drop_list)
+
 
 
     def crawl(self, url):
@@ -37,25 +62,23 @@ class AISdatetGenerator(object):
 
         # Find all <a> tags containing .zip files and extract their href attribute
         self.zip_names = soup.find_all('a', href=lambda href: href.endswith('.zip'))
-        
-
-           
-        ### CHOSE ZIP FILES###
-        # check if zips are already in directory
-        AIS_dates_in_directory = [file[6:-4] for file in os.listdir(self.dataDirectory) if file.endswith(".csv")]
-
-
         # extract only timestamps
         self.zip_names = [x['href'][6:-4] for x in self.zip_names] 
-        
-        if self.timeend is None: #single file
-            self.desired_date = list(filter(lambda x: x == self.timestart, self.zip_names))[0]
 
+           
+        ### CHOSE ZIP FILES ###
+
+        # collect all timestamp already in directory
+        AIS_dates_in_directory = [file[6:-4] for file in os.listdir(self.dataDirectory) if file.endswith(".csv")]
+        print('dates in dataDirectory: ', AIS_dates_in_directory)
+
+        if self.timeend is None: #single file
+            #self.desired_date = list(filter(lambda x: x == self.timestart, self.zip_names))
             # TODO Test if wrong directory -> IndexError  when [0] to access empty self.desired_dates
             # check if already downloaded 
-            if self.desired_date not in AIS_dates_in_directory:
+            if self.timestart not in AIS_dates_in_directory:
                 print("Proceeding with preparing the download for the single day requested.")
-                selected_zips = ['aisdk-' + self.desired_date + '.zip']    
+                selected_zips = ['aisdk-' + self.timestart + '.zip']    
 
             else:
                 print("Selected AIS data already downloaded. Ready for filtering.")
@@ -115,7 +138,7 @@ class AISdatetGenerator(object):
     
     def connectSQLite(self):
         self.conn = sql.connect(self.databaseDirectory + 'ais.db')
-        print(self.conn.total_changes) # test if connection is successful
+        print('Total changes in DB: ', self.conn.total_changes) # test if connection is successful
         self.cursor = self.conn.cursor()
 
         # Output basic information about the database
@@ -129,12 +152,18 @@ class AISdatetGenerator(object):
         '''
         Filter data on MMSI per class using SQL
         '''
+        import_link = self.dataDirectory + f'/aisdk-{self.timestart}.csv'
+        self.tablenameAISdata = 'XYZ'
+
+
         ## TODO: CHECK IF CONNECTION EXISTS, else connect
         ## Drop temp tables if exist
         self.cursor.execute('DROP TABLE IF EXISTS tempfishingMMSI;')
         self.cursor.execute('DROP TABLE IF EXISTS temppassengerMMSI;')
         self.cursor.execute('DROP TABLE IF EXISTS tempmerchantMMSI;')
 
+        # Remove all rows in XYZ table
+        self.cursor.execute('DELETE FROM XYZ WHERE SOG NOT NULL;')
 
         ## Create temp Tables
         self.cursor.execute('CREATE TABLE tempfishingMMSI(MMSI UNIQUE, NavStatus TEXT);')
@@ -143,10 +172,24 @@ class AISdatetGenerator(object):
         
         print('temp MMSI files created successfully.')
 
-        subprocess.call(['sqlite3', "ais.db", "SELECT COUNT(*) FROM tempAIS;",]) #".mode csv", f".import ../data_DMA/aisdk-{self.desired_date[0]}.csv tempAIS", "SELECT COUNT(*) FROM tempAIS;"})
+        self.cursor.execute('SELECT COUNT(*) FROM XYZ;')
+        all_tables = self.cursor.fetchall()
+        print(f'{all_tables} Samples in XYZ')
+        self.cursor.close()
+
+        # if time range and multiple tables: loop over list where updates import_link
+        
+        subprocess.call(['sqlite3', "ais.db", "-cmd", ".mode csv", f".import {import_link} {tablenameAISdata}"])#, ".mode markdown", "SELECT COUNT(*) FROM XYZ;"])
         #os.system("sqlite3 ../ais.db;import subprocess .mode csv; .quit;")
         
-        print('got into sqlite3')
+        print('import to sqlite3 command ran through')
+        self.cursor = self.conn.cursor()
+
+        # Check if the import was successful
+        self.cursor.execute(f'SELECT COUNT(*) FROM {tablenameAISdata};')
+        sampleSizeAIS = self.cursor.fetchall()
+        print(f'{sampleSizeAIS} Samples in {{tablenameAISdata}}')
+
         return
     
     
@@ -180,8 +223,43 @@ class AISdatetGenerator(object):
         self.cursor.execute('DROP TABLE IF EXISTS tempmerchantMMSI;')
 
         
+    def drop_unrealistic_loc(self):
+        pass
 
-
+    def drop_unrealistic_speeds(self):
+         pass
+ 
+    def drop_unrealistic_mmsi(self):
+         pass
+ 
+    def fill_statics(self):
+         pass
+ 
+    def comp_distance(self):
+         pass
+    def drop_unrealistic_speeds(self):
+         pass
+ 
+    def drop_unrealistic_mmsi(self):
+         pass
+ 
+    def fill_statics(self):
+         pass
+ 
+    def comp_distance(self):
+         pass
+    
+    def comp_timedelta(self):
+         pass
+ 
+    def comp_speed(self):
+         pass
+ 
+ 
+    def drop_list(self, drop_list):
+         for column in drop_list:
+             self.cursor.execute(f'ALTER TABLE {self.tablenameAISdata} DROP IF EXISTS {column};')
+    
     def extractCSV(self, vesselType:str='fishing'):
         '''
         Filter data on MMSI per class using SQL
