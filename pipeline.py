@@ -10,6 +10,7 @@ import pandas as pd
 import sqlite3 as sql
 import subprocess
 import tqdm
+import rasterio
 
 class AISdatetGenerator(object):
     def __init__(self,timestart:str='2023-06-05',
@@ -17,39 +18,49 @@ class AISdatetGenerator(object):
                  dataDirectory:str='./', 
                  databaseDirectory:str='./', 
                  databaseName:str='aisPlay.db',
-                 unrealistic_location=False,
-                 unrealistic_speeds=False,
-                 unrealistic_mmsi=False,
-                 fill_statics=False,
-                 comp_distance=False,
-                 comp_timedelta=False,
-                 comp_speed=False,
-                 drop_list:list=None) -> None:
+                 add_waterdepth:bool=True,
+                 unrealistic_location:bool=False,
+                 unrealistic_speeds:bool=False,
+                 unrealistic_mmsi:bool=False,
+                 fill_statics:bool=False,
+                 comp_distance:bool=False,
+                 comp_timedelta:bool=False,
+                 comp_speed:bool=False,
+                 drop_list:list=None,
+                 latMinBoundary:int=54,
+                 latMaxBoundary:int=59,
+                 lonMinBoundary:int=3,
+                 lonMaxBoundary:int=17,
+                 lenMMSI:int=9) -> None:
         
-        self.url = "http://web.ais.dk/aisdata/" 
+        self.url = "http://web.ais.dk/aisdata/" #
+        self.bathymetry_file = 'bathymetry.tif'
+
         self.timestart = timestart
         self.timeend = timeend
         self.dataDirectory = dataDirectory
         self.databaseDirectory = databaseDirectory
-        
-        
+
+
+
         # move syntaxcheck of input timestart and timeend up here
 
         self.data = self.crawl(self.url)
         self.csv_filenames = []
         
-        self.connectSQLite()
         self.updateMMSIs()
+        self.drop_unrealistic_courses()
 
-        if unrealistic_location: self.drop_unrealistic_loc()
+        if unrealistic_location: self.drop_unrealistic_loc(latMinBoundary, latMaxBoundary, lonMinBoundary, lonMaxBoundary)
         if unrealistic_speeds: self.drop_unrealistic_speeds()
-        if unrealistic_mmsi: self.drop_unrealistic_mmsi()
+        if unrealistic_mmsi: self.drop_unrealistic_mmsi(lenMMSI)
         if fill_statics: self.fill_statics()
         if comp_distance: self.comp_distance()
         if comp_timedelta: self.comp_timedelta()
         if comp_speed: self.comp_speed()
         if drop_list: self.drop_list(drop_list)
 
+        if add_waterdepth: self.add_waterdepth()
 
 
     def crawl(self, url):
@@ -146,7 +157,8 @@ class AISdatetGenerator(object):
         all_tables = self.cursor.fetchall()
         print(f'The following tables are in Database {all_tables}')
 
-        
+    def disconnectSQLite(self):
+        if self.conn: self.cursor.close()
 
     def updateMMSIs(self):
         '''
@@ -154,7 +166,7 @@ class AISdatetGenerator(object):
         '''
         import_link = self.dataDirectory + f'/aisdk-{self.timestart}.csv'
         self.tablenameAISdata = 'XYZ'
-
+        self.connectSQLite()
 
         ## TODO: CHECK IF CONNECTION EXISTS, else connect
         ## Drop temp tables if exist
@@ -172,27 +184,27 @@ class AISdatetGenerator(object):
         
         print('temp MMSI files created successfully.')
 
-        self.cursor.execute('SELECT COUNT(*) FROM XYZ;')
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
         all_tables = self.cursor.fetchall()
         print(f'{all_tables} Samples in XYZ')
         self.cursor.close()
 
         # if time range and multiple tables: loop over list where updates import_link
         
-        subprocess.call(['sqlite3', "ais.db", "-cmd", ".mode csv", f".import {import_link} {tablenameAISdata}"])#, ".mode markdown", "SELECT COUNT(*) FROM XYZ;"])
+        subprocess.call(['sqlite3', "ais.db", "-cmd", ".mode csv", f".import {import_link} {self.tablenameAISdata}"])#, ".mode markdown", "SELECT COUNT(*) FROM XYZ;"])
         #os.system("sqlite3 ../ais.db;import subprocess .mode csv; .quit;")
         
         print('import to sqlite3 command ran through')
         self.cursor = self.conn.cursor()
 
         # Check if the import was successful
-        self.cursor.execute(f'SELECT COUNT(*) FROM {tablenameAISdata};')
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
         sampleSizeAIS = self.cursor.fetchall()
-        print(f'{sampleSizeAIS} Samples in {{tablenameAISdata}}')
+        print(f'{sampleSizeAIS} Samples in {self.tablenameAISdata}')
 
+        self.disconnectSQLite()
         return
-    
-    
+        ## Import by importing to python and then to mysql :-1:
         ## Import existing and newly downloaded dataset and alter to aisPlay format
         #users = pd.read_csv(self.dataDirectory +'/aisdk-' + self.desired_date[0]+'.csv')
         #users.to_sql('tempAIS', self.cursor, if_exists='append', index = False, chunksize = 10000)
@@ -201,14 +213,11 @@ class AISdatetGenerator(object):
         ## Alter tables into desired table structure
 
         
-        
         ## filter MMSIs for the three defined classes 
         self.cursor.execute(f'INSERT INTO tempfishingMMSI SELECT DISTINCT(tempfishingMMSI.MMSI), NavStatus FROM tempAIS WHERE NavStatus LIKE "%fishing%" OR "ShipType" LIKE "%ishing%";')
         self.cursor.execute(f'INSERT INTO temppassengerMMSI SELECT DISTINCT(temppassengerMMSI.MMSI), "ShipType" FROM tempAIS WHERE "ShipType" LIKE "%passenger%";')
         self.cursor.execute(f'INSERT INTO tempmerchantMMSI SELECT DISTINCT(tempmerchantMMSI.MMSI), NULL FROM tempAIS WHERE CargoType NOT NULL;')
-
-        
-        
+ 
         
         ## Merge tempMMSIs into the OG MMSI file
         # TODO: CHECK IF MMSI FILES exist: else: print('make sure you are connected to the correct database')
@@ -222,44 +231,93 @@ class AISdatetGenerator(object):
         self.cursor.execute('DROP TABLE IF EXISTS temppassengerMMSI;')
         self.cursor.execute('DROP TABLE IF EXISTS tempmerchantMMSI;')
 
+    def drop_unrealistic_courses(self):
+        self.connectSQLite()
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
+        beforesampleSize = self.cursor.fetchall()
+
+        self.cursor.execute(f'DELETE FROM {self.tablenameAISdata} WHERE COG < 0 OR COG > 360;')
         
-    def drop_unrealistic_loc(self):
+        # Check if the import was successful
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
+        aftersampleSizeAIS = self.cursor.fetchall()
+        print(f'from {beforesampleSize} to {aftersampleSizeAIS} Samples in {self.tablenameAISdata} by dropping COG < 0 OR COG > 360;')
+        self.disconnectSQLite()
+
+    def get_depth(self, longitude, latitude):
+        # Open the bathymetry GeoTIFF file
+        bathymetry_data = rasterio.open(self.bathymetry_file)
+
+        row, col = bathymetry_data.index(longitude, latitude)
+        depth = bathymetry_data.read(1)[row, col]
+        return depth
+
+    def add_waterdepth(self):
+        # Loop through remaining samples in database
+        # use execute_many
         pass
 
+    def drop_unrealistic_loc(self, latMinBoundary, latMaxBoundary, lonMinBoundary, lonMaxBoundary):
+        self.connectSQLite()
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
+        beforesampleSize = self.cursor.fetchall()
+
+        self.cursor.execute(f'DELETE FROM {self.tablenameAISdata} WHERE Latitude < {latMinBoundary} OR Latidude > {latMaxBoundary} OR Longitude < {lonMinBoundary} OR Longitude > {lonMaxBoundary};')
+        
+        # Check if the import was successful
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
+        aftersampleSizeAIS = self.cursor.fetchall()
+        print(f'from {beforesampleSize} to {aftersampleSizeAIS} Samples in {self.tablenameAISdata} by dropping outbound locations')
+
+        self.disconnectSQLite()
+
     def drop_unrealistic_speeds(self):
-         pass
+        self.connectSQLite()
+        # CODE
+        self.disconnectSQLite()
  
-    def drop_unrealistic_mmsi(self):
-         pass
+    def drop_unrealistic_mmsi(self, lenMMSI):
+        self.connectSQLite()
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
+        beforesampleSize = self.cursor.fetchall()
+
+        self.cursor.execute(f'DELETE FROM {self.tablenameAISdata} WHERE length(MMSI) <> {lenMMSI};')
+        
+        # Check if the import was successful
+        self.cursor.execute(f'SELECT COUNT(*) FROM {self.tablenameAISdata};')
+        aftersampleSizeAIS = self.cursor.fetchall()
+        print(f'from {beforesampleSize} to {aftersampleSizeAIS} Samples in {self.tablenameAISdata} by dropping unrealistc MMSI of not {lenMMSI}')
+
+        self.disconnectSQLite()
  
     def fill_statics(self):
-         pass
+        self.connectSQLite()
+        # CODE
+        self.disconnectSQLite()
  
     def comp_distance(self):
-         pass
-    def drop_unrealistic_speeds(self):
-         pass
- 
-    def drop_unrealistic_mmsi(self):
-         pass
- 
-    def fill_statics(self):
-         pass
- 
-    def comp_distance(self):
-         pass
+        self.connectSQLite()
+        # CODE
+        self.disconnectSQLite()
     
     def comp_timedelta(self):
-         pass
+        self.connectSQLite()
+        # CODE
+        self.disconnectSQLite()
  
     def comp_speed(self):
-         pass
+        self.connectSQLite()
+        # CODE
+        self.disconnectSQLite()
  
  
     def drop_list(self, drop_list):
+         self.connectSQLite()
          for column in drop_list:
              self.cursor.execute(f'ALTER TABLE {self.tablenameAISdata} DROP IF EXISTS {column};')
-    
+         self.disconnectSQLite()
+
+
     def extractCSV(self, vesselType:str='fishing'):
         '''
         Filter data on MMSI per class using SQL
