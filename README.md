@@ -1,7 +1,8 @@
 # openAISdataDMA
 A pipeline for generating AIS data sets with historic messages from a selected vessel class
 The data is openly available at http://web.ais.dk/aisdata/. 
-The corresponding paper to this work can be found at: https://doi.org/10.1145/3615893.3628758
+The corresponding paper to this work is: 
+Mirjam Bayer, Tabea Fry, Sören Dethlefsen, and Daniyal Kazempour. 2023. Pipeline for open AIS data with filtering based on vessel class. In Proceedings of the 1st ACM SIGSPATIAL International Workshop on AI-driven Spatio-temporal Data Analysis for Wildlife Conservation (GeoWildLife '23). Association for Computing Machinery, New York, NY, USA, 21–24. https://doi.org/10.1145/3615893.3628758 
 
 ### Please keep in mind
 When you download data, please note that there are some limitations to the upload capacity from the server. This means that if someone is trying to download all available data at once, the system might "stall".
