@@ -1,6 +1,7 @@
 # openAISdataDMA
 A pipeline for generating AIS data sets with historic messages from a selected vessel class
 The data is openly available at http://web.ais.dk/aisdata/. 
+The corresponding paper to this work can be found at: https://doi.org/10.1145/3615893.3628758
 
 ### Please keep in mind
 When you download data, please note that there are some limitations to the upload capacity from the server. This means that if someone is trying to download all available data at once, the system might "stall".
